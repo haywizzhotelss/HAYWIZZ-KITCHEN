@@ -487,12 +487,7 @@ jobs:
                   }
                   if (anyNew) lastRound = now;
 
-                  // every few seconds repeat the voice for EVERY order still waiting (newest first) until it is accepted
-                  if (voice && !anyNew && arr.length() > 0 && now - lastRound > REPEAT_MS && now - lastSpeechEnd > REPEAT_MS
-                          && !(ttsReady && tts.isSpeaking())) {
-                      for (int i = arr.length() - 1; i >= 0; i--) speakOrder(arr.getJSONObject(i));
-                      lastRound = now;
-                  }
+                  // Each order is spoken ONE time only. The kitchen taps "Repeat voice" on an order to hear it again.
 
                   // orders that are no longer "new" (accepted / cancelled): clear their notification
                   Iterator<String> it = announced.iterator();
