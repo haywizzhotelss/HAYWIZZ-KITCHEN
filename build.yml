@@ -2,6 +2,8 @@ name: Build Android APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -255,6 +257,14 @@ jobs:
                       }
                   }
 
+                  /** "Repeat voice" button: speaks the given pieces (JSON array of text) through the background service. */
+                  @JavascriptInterface
+                  public void sayOrder(String segsJson) {
+                      Intent i = new Intent(MainActivity.this, OrderService.class);
+                      i.setAction("SAYSEG").putExtra("segs", segsJson);
+                      try { MainActivity.this.startForegroundService(i); } catch (Exception e) { /* ignore */ }
+                  }
+
                   @JavascriptInterface
                   public void printPage() {
                       runOnUiThread(() -> {
@@ -280,7 +290,10 @@ jobs:
           import android.content.pm.ServiceInfo;
           import android.graphics.drawable.Icon;
           import android.media.AudioAttributes;
+          import android.app.AlarmManager;
           import android.os.Build;
+          import android.os.SystemClock;
+          import android.speech.tts.UtteranceProgressListener;
           import android.os.IBinder;
           import android.os.PowerManager;
           import android.speech.tts.TextToSpeech;
@@ -291,7 +304,9 @@ jobs:
           import java.io.InputStream;
           import java.io.OutputStream;
           import java.net.HttpURLConnection;
+          import java.util.ArrayList;
           import java.util.HashSet;
+          import java.util.List;
           import java.util.Iterator;
           import java.util.Locale;
           import java.util.Set;
@@ -323,6 +338,8 @@ jobs:
               private String lastStatus = "";
               private final Set<String> announced = new HashSet<>();
               private long lastRound = 0;
+              private volatile long lastSpeechEnd = 0;
+              private static final long SMALL_GAP = 600, ORDER_GAP = 1800;
 
               @Override
               public void onCreate() {
@@ -352,7 +369,12 @@ jobs:
                   tts.setAudioAttributes(new AudioAttributes.Builder()
                           .setUsage(AudioAttributes.USAGE_MEDIA)
                           .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
-                  tts.setSpeechRate(0.95f);
+                  tts.setSpeechRate(0.85f);          // a little slower = clearer
+                  tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                      @Override public void onStart(String id) { }
+                      @Override public void onDone(String id) { lastSpeechEnd = System.currentTimeMillis(); }
+                      @Override public void onError(String id) { lastSpeechEnd = System.currentTimeMillis(); }
+                  });
                   ttsReady = true;
               }
 
@@ -372,6 +394,14 @@ jobs:
                   if (!wl.isHeld()) wl.acquire();
 
                   if ("SAY".equals(action) && intent.getStringExtra("text") != null) speak(intent.getStringExtra("text"));
+                  if ("SAYSEG".equals(action) && intent.getStringExtra("segs") != null) {
+                      try {
+                          JSONArray a = new JSONArray(intent.getStringExtra("segs"));
+                          List<String> segs = new ArrayList<>();
+                          for (int i = 0; i < a.length(); i++) segs.add(a.getString(i));
+                          speakSegments(segs);
+                      } catch (Exception e) { /* ignore */ }
+                  }
                   if ("RELOGIN".equals(action)) { token = null; tokenExp = 0; }
 
                   if (loop == null || !loop.isAlive()) {
@@ -380,6 +410,20 @@ jobs:
                       loop.start();
                   }
                   return START_STICKY;
+              }
+
+              /** If the app is swiped away from recent apps, start the service again so alerts keep working. */
+              @Override
+              public void onTaskRemoved(Intent rootIntent) {
+                  if (sp.getBoolean("enabled", false)) {
+                      try {
+                          AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                          PendingIntent pi = PendingIntent.getForegroundService(this, 7, new Intent(this, OrderService.class),
+                                  PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                          am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 3000, pi);
+                      } catch (Exception e) { /* ignore */ }
+                  }
+                  super.onTaskRemoved(rootIntent);
               }
 
               @Override
@@ -436,7 +480,7 @@ jobs:
                       current.add(id);
                       if (!announced.contains(id)) {
                           notifyOrder(o);
-                          if (voice) speak(announceText(o));
+                          if (voice) speakOrder(o);
                           announced.add(id);
                           anyNew = true;
                       }
@@ -444,8 +488,9 @@ jobs:
                   if (anyNew) lastRound = now;
 
                   // every few seconds repeat the voice for EVERY order still waiting (newest first) until it is accepted
-                  if (voice && !anyNew && arr.length() > 0 && now - lastRound > REPEAT_MS && !(ttsReady && tts.isSpeaking())) {
-                      for (int i = arr.length() - 1; i >= 0; i--) speak(announceText(arr.getJSONObject(i)));
+                  if (voice && !anyNew && arr.length() > 0 && now - lastRound > REPEAT_MS && now - lastSpeechEnd > REPEAT_MS
+                          && !(ttsReady && tts.isSpeaking())) {
+                      for (int i = arr.length() - 1; i >= 0; i--) speakOrder(arr.getJSONObject(i));
                       lastRound = now;
                   }
 
@@ -516,27 +561,53 @@ jobs:
                   return t.isEmpty() ? "Table" : "Table " + t;
               }
 
-              private String announceText(JSONObject o) {
-                  StringBuilder items = new StringBuilder();
+              /** Room 101 -> "Room one zero one" so the number is clear. */
+              private static String spell(String s) {
+                  String[] d = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"};
+                  java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d{3,}").matcher(say(s));
+                  StringBuffer sb = new StringBuffer();
+                  while (m.find()) {
+                      StringBuilder w = new StringBuilder();
+                      for (char c : m.group().toCharArray()) { if (w.length() > 0) w.append(" "); w.append(d[c - '0']); }
+                      m.appendReplacement(sb, w.toString());
+                  }
+                  m.appendTail(sb);
+                  return sb.toString();
+              }
+
+              /** The order as short pieces: heading, room/table or customer, then one piece per dish. */
+              private List<String> segments(JSONObject o) {
+                  List<String> l = new ArrayList<>();
+                  if ("table".equals(str(o, "source"))) {
+                      l.add("room".equals(str(o, "location_kind")) ? "Room order." : "Table order.");
+                      l.add(spell(locLabel(o)) + ".");
+                  } else {
+                      l.add("delivery".equals(str(o, "order_type")) ? "Online delivery order." : "Online take away order.");
+                      String name = str(o, "customer_name");
+                      if (!name.isEmpty()) l.add("From " + say(name) + ".");
+                  }
                   JSONArray arr = o.optJSONArray("items");
                   if (arr != null) {
                       for (int i = 0; i < arr.length(); i++) {
                           JSONObject it = arr.optJSONObject(i);
                           if (it == null) continue;
                           String name = str(it, "n"), label = str(it, "l");
-                          if (items.length() > 0) items.append(", ");
-                          items.append(it.optInt("q", 1)).append(' ').append(say(name + (label.isEmpty() ? "" : " " + label)));
+                          l.add(it.optInt("q", 1) + " " + say(name + (label.isEmpty() ? "" : " " + label)) + ".");
                       }
                   }
-                  String head;
-                  if ("table".equals(str(o, "source"))) {
-                      head = ("room".equals(str(o, "location_kind")) ? "Room order. " : "Table order. ") + say(locLabel(o)) + ".";
-                  } else {
-                      String name = str(o, "customer_name");
-                      head = ("delivery".equals(str(o, "order_type")) ? "Online delivery order" : "Online take away order")
-                              + (name.isEmpty() ? "" : " from " + say(name)) + ".";
+                  return l;
+              }
+
+              private void speakOrder(JSONObject o) { speakSegments(segments(o)); }
+
+              /** Speaks each piece with a small gap after it, and a longer gap after the whole order. */
+              private void speakSegments(List<String> segs) {
+                  if (!ttsReady) return;
+                  for (String s : segs) {
+                      tts.speak(s, TextToSpeech.QUEUE_ADD, null, "hz" + System.nanoTime());
+                      tts.playSilentUtterance(SMALL_GAP, TextToSpeech.QUEUE_ADD, "gap" + System.nanoTime());
                   }
-                  return head + " " + items + ".";
+                  tts.playSilentUtterance(ORDER_GAP - SMALL_GAP, TextToSpeech.QUEUE_ADD, "end" + System.nanoTime());
               }
 
               private void speak(String text) {
@@ -673,3 +744,11 @@ jobs:
         with:
           name: Haywizz-Kitchen-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish APK as a direct download (Releases)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Haywizz-Kitchen.apk
+          gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest Haywizz-Kitchen.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Haywizz Kitchen app (latest)" --notes "Tap Haywizz-Kitchen.apk below to download and install."
