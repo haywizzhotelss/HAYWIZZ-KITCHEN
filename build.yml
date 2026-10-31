@@ -329,6 +329,7 @@ jobs:
               private PowerManager.WakeLock wl;
               private TextToSpeech tts;
               private volatile boolean ttsReady = false;
+              private final List<List<String>> pendingSpeech = new ArrayList<>();   // requests that came before the voice engine was ready
               private volatile boolean stop = false;
               private Thread loop;
               private NotificationManager nm;
@@ -338,6 +339,8 @@ jobs:
               private String lastStatus = "";
               private final Set<String> announced = new HashSet<>();
               private long lastRound = 0;
+              private final java.util.Map<String, Integer> times = new java.util.HashMap<>();   // how many times each order was spoken
+              private static final int MAX_TIMES = 2;                                          // each order is spoken 2 times, then stops
               private volatile long lastSpeechEnd = 0;
               private static final long SMALL_GAP = 600, ORDER_GAP = 1800;
 
@@ -376,6 +379,7 @@ jobs:
                       @Override public void onError(String id) { lastSpeechEnd = System.currentTimeMillis(); }
                   });
                   ttsReady = true;
+                  synchronized (pendingSpeech) { for (List<String> l : pendingSpeech) speakSegments(l); pendingSpeech.clear(); }
               }
 
               @Override
@@ -482,18 +486,28 @@ jobs:
                           notifyOrder(o);
                           if (voice) speakOrder(o);
                           announced.add(id);
+                          times.put(id, 1);
                           anyNew = true;
                       }
                   }
                   if (anyNew) lastRound = now;
 
-                  // Each order is spoken ONE time only. The kitchen taps "Repeat voice" on an order to hear it again.
+                  // Speak each waiting order a 2nd time (once), after a pause. After that it stays silent.
+                  // The kitchen can tap "Repeat voice" on an order to hear it again.
+                  if (voice && !anyNew && arr.length() > 0 && now - lastSpeechEnd > REPEAT_MS && !(ttsReady && tts.isSpeaking())) {
+                      for (int i = arr.length() - 1; i >= 0; i--) {
+                          JSONObject o = arr.getJSONObject(i);
+                          String id = o.getString("id");
+                          Integer n = times.get(id);
+                          if (n != null && n < MAX_TIMES) { speakOrder(o); times.put(id, n + 1); }
+                      }
+                  }
 
                   // orders that are no longer "new" (accepted / cancelled): clear their notification
                   Iterator<String> it = announced.iterator();
                   while (it.hasNext()) {
                       String id = it.next();
-                      if (!current.contains(id)) { nm.cancel(id.hashCode()); it.remove(); }
+                      if (!current.contains(id)) { nm.cancel(id.hashCode()); it.remove(); times.remove(id); }
                   }
                   setStatus(arr.length() == 0 ? "Listening for new orders" : arr.length() + " new order(s) waiting");
               }
@@ -597,7 +611,7 @@ jobs:
 
               /** Speaks each piece with a small gap after it, and a longer gap after the whole order. */
               private void speakSegments(List<String> segs) {
-                  if (!ttsReady) return;
+                  if (!ttsReady) { synchronized (pendingSpeech) { pendingSpeech.add(segs); } return; }
                   for (String s : segs) {
                       tts.speak(s, TextToSpeech.QUEUE_ADD, null, "hz" + System.nanoTime());
                       tts.playSilentUtterance(SMALL_GAP, TextToSpeech.QUEUE_ADD, "gap" + System.nanoTime());
