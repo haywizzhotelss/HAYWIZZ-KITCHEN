@@ -24,8 +24,16 @@ jobs:
                   applicationId "com.haywizz.kitchen"
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
+                  versionCode 3
+                  versionName "3.0"
+              }
+              signingConfigs {
+                  debug {   // fixed key: every new build installs over the old app (no uninstall needed)
+                      storeFile file('haywizz.jks')
+                      storePassword 'haywizz123'
+                      keyAlias 'haywizz'
+                      keyPassword 'haywizz123'
+                  }
               }
               buildTypes {
                   release { minifyEnabled false }
@@ -35,6 +43,55 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
+          HZEOF
+          base64 -d > app/haywizz.jks <<'HZEOF'
+          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
+          6eMEFJxduF1W+jEVsvTwSVffjmSYbSJCAgInEA==
           HZEOF
           mkdir -p app/src/main
           cat > app/src/main/AndroidManifest.xml <<'HZEOF'
@@ -220,6 +277,9 @@ jobs:
                   public boolean isNative() { return true; }
 
                   @JavascriptInterface
+                  public int version() { return 3; }
+
+                  @JavascriptInterface
                   public String savedLogin() {
                       try {
                           JSONObject o = new JSONObject();
@@ -358,10 +418,28 @@ jobs:
                   ord.setVibrationPattern(new long[]{0, 400, 150, 400, 150, 800});
                   nm.createNotificationChannel(ord);
 
+                  loadTimes();
                   tts = new TextToSpeech(this, this);
                   PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                   wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "haywizz:orders");
                   wl.setReferenceCounted(false);
+              }
+
+              /** How many times each order was spoken is saved, so if Android restarts the service nothing is announced again. */
+              private void loadTimes() {
+                  try {
+                      JSONObject o = new JSONObject(sp.getString("times", "{}"));
+                      Iterator<String> k = o.keys();
+                      while (k.hasNext()) { String id = k.next(); times.put(id, o.getInt(id)); announced.add(id); }
+                  } catch (Exception e) { /* ignore */ }
+              }
+
+              private void saveTimes() {
+                  try {
+                      JSONObject o = new JSONObject();
+                      for (java.util.Map.Entry<String, Integer> e : times.entrySet()) o.put(e.getKey(), e.getValue());
+                      sp.edit().putString("times", o.toString()).apply();
+                  } catch (Exception e) { /* ignore */ }
               }
 
               @Override
@@ -486,7 +564,7 @@ jobs:
                           notifyOrder(o);
                           if (voice) speakOrder(o);
                           announced.add(id);
-                          times.put(id, 1);
+                          times.put(id, 1); saveTimes();
                           anyNew = true;
                       }
                   }
@@ -499,7 +577,7 @@ jobs:
                           JSONObject o = arr.getJSONObject(i);
                           String id = o.getString("id");
                           Integer n = times.get(id);
-                          if (n != null && n < MAX_TIMES) { speakOrder(o); times.put(id, n + 1); }
+                          if (n != null && n < MAX_TIMES) { speakOrder(o); times.put(id, n + 1); saveTimes(); }
                       }
                   }
 
@@ -507,7 +585,7 @@ jobs:
                   Iterator<String> it = announced.iterator();
                   while (it.hasNext()) {
                       String id = it.next();
-                      if (!current.contains(id)) { nm.cancel(id.hashCode()); it.remove(); times.remove(id); }
+                      if (!current.contains(id)) { nm.cancel(id.hashCode()); it.remove(); times.remove(id); saveTimes(); }
                   }
                   setStatus(arr.length() == 0 ? "Listening for new orders" : arr.length() + " new order(s) waiting");
               }
