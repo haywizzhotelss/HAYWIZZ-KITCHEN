@@ -24,8 +24,8 @@ jobs:
                   applicationId "com.haywizz.kitchen"
                   minSdk 26
                   targetSdk 34
-                  versionCode 3
-                  versionName "3.0"
+                  versionCode 4
+                  versionName "4.0"
               }
               signingConfigs {
                   debug {   // fixed key: every new build installs over the old app (no uninstall needed)
@@ -277,7 +277,7 @@ jobs:
                   public boolean isNative() { return true; }
 
                   @JavascriptInterface
-                  public int version() { return 3; }
+                  public int version() { return 4; }
 
                   @JavascriptInterface
                   public String savedLogin() {
@@ -397,6 +397,8 @@ jobs:
               private String token = null;
               private long tokenExp = 0;
               private String lastStatus = "";
+              private boolean payCol = true;
+              private static final long RECENT_MS = 5 * 60 * 1000;   // only orders newer than this are announced; older waiting orders stay silent
               private final Set<String> announced = new HashSet<>();
               private long lastRound = 0;
               private final java.util.Map<String, Integer> times = new java.util.HashMap<>();   // how many times each order was spoken
@@ -543,9 +545,11 @@ jobs:
                   if (token == null || System.currentTimeMillis() > tokenExp) login(url, key);
                   if (token == null) return;
 
-                  String q = url + "/rest/v1/orders?select=id,order_no,source,order_type,location_label,location_kind,table_no,customer_name,items"
-                          + "&status=eq.new&order=created_at.asc&limit=50";
+                  String q = url + "/rest/v1/orders?select=" + (payCol ? "id,order_no,source,order_type,location_label,location_kind,table_no,customer_name,items,pay_status,updated_at,created_at"
+                                  : "id,order_no,source,order_type,location_label,location_kind,table_no,customer_name,items,created_at")
+                          + "&status=eq.new" + (payCol ? "&pay_status=neq.pending" : "") + "&order=created_at.asc&limit=50";
                   String[] res = http("GET", q, key, token, null);
+                  if ("400".equals(res[0]) && payCol) { payCol = false; return; }   // payment column not created yet (update-2-payments.sql): work without it
                   if ("401".equals(res[0]) || "403".equals(res[0])) { token = null; return; }
                   if (!res[0].startsWith("2")) { setStatus("Server error " + res[0] + " – retrying"); return; }
 
@@ -561,11 +565,16 @@ jobs:
                       String id = o.getString("id");
                       current.add(id);
                       if (!announced.contains(id)) {
-                          notifyOrder(o);
-                          if (voice) speakOrder(o);
                           announced.add(id);
-                          times.put(id, 1); saveTimes();
-                          anyNew = true;
+                          if (isRecent(o)) {
+                              notifyOrder(o);
+                              if (voice) speakOrder(o);
+                              times.put(id, 1);
+                              anyNew = true;
+                          } else {
+                              times.put(id, MAX_TIMES);          // old order that was already waiting: stay silent, never repeat
+                          }
+                          saveTimes();
                       }
                   }
                   if (anyNew) lastRound = now;
@@ -673,6 +682,8 @@ jobs:
                       String name = str(o, "customer_name");
                       if (!name.isEmpty()) l.add("From " + say(name) + ".");
                   }
+                  String ps = str(o, "pay_status");
+                  if ("claimed".equals(ps) || "confirmed".equals(ps)) l.add("Payment by UPI. Please check.");
                   JSONArray arr = o.optJSONArray("items");
                   if (arr != null) {
                       for (int i = 0; i < arr.length(); i++) {
@@ -683,6 +694,17 @@ jobs:
                       }
                   }
                   return l;
+              }
+
+              /** Was this order created / its payment started in the last few minutes? */
+              private boolean isRecent(JSONObject o) {
+                  try {
+                      String ts = str(o, "updated_at");
+                      if (ts.isEmpty()) ts = str(o, "created_at");
+                      if (ts.isEmpty()) return true;
+                      long t = java.time.Instant.parse(ts).toEpochMilli();
+                      return System.currentTimeMillis() - t < RECENT_MS;
+                  } catch (Exception e) { return true; }
               }
 
               private void speakOrder(JSONObject o) { speakSegments(segments(o)); }
@@ -713,7 +735,7 @@ jobs:
                       String no = str(o, "order_no");
                       String name = str(o, "customer_name");
                       String title = table ? "🔔 " + locLabel(o) + " – new order #" + no
-                              : "🛵 Online order #" + no + (name.isEmpty() ? "" : " – " + name);
+                              : "🛵 Online order #" + no + (name.isEmpty() ? "" : " – " + name) + ("claimed".equals(str(o, "pay_status")) ? " · 💳 UPI – check payment" : "");
                       StringBuilder body = new StringBuilder();
                       JSONArray arr = o.optJSONArray("items");
                       if (arr != null) for (int i = 0; i < arr.length(); i++) {
